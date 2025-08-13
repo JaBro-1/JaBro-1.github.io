@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Insurance Assistant — Demo</title>
+<style>
+  :root{--radius:14px;--shadow:0 8px 28px rgba(0,0,0,.15)}
+  *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Helvetica,Arial,sans-serif}
+  body{margin:0;background:#0f172a;color:#0b1221;display:flex;align-items:center;justify-content:center;min-height:100vh}
+  .app{width:min(920px,95vw);background:#fff;border-radius:20px;box-shadow:var(--shadow);overflow:hidden;display:grid;grid-template-rows:auto 1fr auto}
+  header{padding:18px 20px;border-bottom:1px solid #eef1f6;display:flex;gap:12px;align-items:center}
+  header .avatar{width:40px;height:40px;border-radius:50%;background:#e5eefc;display:grid;place-items:center;font-weight:700;color:#2b5cff}
+  header .meta{display:flex;flex-direction:column}
+  header .meta .name{font-weight:700}
+  header .meta .sub{font-size:12px;color:#5b6b87}
+  .transcript{padding:16px 14px;overflow:auto;background:#f8fafc}
+  .bubble{max-width:75%;padding:12px 14px;margin:8px 10px;border-radius:16px;line-height:1.35;box-shadow:0 2px 10px rgba(0,0,0,.06)}
+  .bot{background:#ffffff;border:1px solid #eef1f6;border-top-left-radius:6px}
+  .user{background:#e9f0ff;border-top-right-radius:6px;margin-left:auto}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+  .chip{padding:8px 12px;border:1px solid #dfe7fb;border-radius:999px;background:#f3f7ff;cursor:pointer;font-size:14px}
+  .chip:hover{filter:brightness(.98)}
+  .row{display:flex;gap:8px;margin-top:6px}
+  input, select{padding:10px 12px;border:1px solid #cfd9ee;border-radius:10px;width:100%;outline:none}
+  .btn{padding:10px 12px;border-radius:10px;border:0;background:#2b5cff;color:#fff;cursor:pointer}
+  .btn.secondary{background:#0b12210d;color:#0b1221;border:1px solid #cfd9ee}
+  .footer{padding:12px;border-top:1px solid #eef1f6;display:flex;gap:8px}
+  .footer input{flex:1}
+  .pill{display:inline-block;padding:3px 8px;border-radius:999px;background:#eef2ff;color:#2b5cff;font-size:12px;margin-left:6px}
+  .small{font-size:12px;color:#5b6b87}
+  .divider{height:1px;background:#eef1f6;margin:10px 0}
+  .right{margin-left:auto}
+  .tag{font-size:11px;background:#eef1f6;border:1px solid #e5eaf2;border-radius:6px;padding:2px 6px;margin-left:6px}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="avatar">AI</div>
+    <div class="meta">
+      <div class="name" id="agencyName">Agency Assistant</div>
+      <div class="sub" id="agencySub">Instant quotes • Answers • Reminders</div>
+    </div>
+    <div class="right small">
+      <span id="agencyPhone" class="tag"></span>
+      <span id="agencyEmail" class="tag"></span>
+    </div>
+  </header>
+
+  <div class="transcript" id="feed"></div>
+
+  <div class="footer">
+    <input id="freeInput" placeholder="Type a question… e.g., ‘How do I file a claim?’" />
+    <button class="btn" id="sendBtn">Send</button>
+    <button class="btn secondary" id="downloadBtn" title="Download captured leads CSV">Export Leads</button>
+  </div>
+</div>
+
+<script>
+/** ====== QUICK CONFIG (brand each agency here) ====== */
+const AGENCY_CONFIG = {
+  name: "Burchfield Insurance Group (Demo)",
+  subtitle: "Instant quotes • Answers • Reminders",
+  phone: "(704) 555-0123",
+  email: "hello@burchfield-demo.com",
+  // Optional: add a webhook to forward leads (Formspree/Zapier/Make)
+  webhookURL: "" // e.g., "https://formspree.io/f/XXXXXX"
+};
+/** ================================================ */
+
+const feed = document.getElementById('feed');
+const input = document.getElementById('freeInput');
+const sendBtn = document.getElementById('sendBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+
+document.getElementById('agencyName').textContent = AGENCY_CONFIG.name;
+document.getElementById('agencySub').textContent = AGENCY_CONFIG.subtitle;
+document.getElementById('agencyPhone').textContent = AGENCY_CONFIG.phone;
+document.getElementById('agencyEmail').textContent = AGENCY_CONFIG.email;
+
+const state = {
+  leads: [],
+  context: null, // current flow (autoQuote, homeQuote, claims, faq, renewal)
+};
+
+// Utilities
+const scroll = () => feed.scrollTop = feed.scrollHeight;
+const say = (html, who='bot') => {
+  const b = document.createElement('div');
+  b.className = `bubble ${who}`;
+  b.innerHTML = html;
+  feed.appendChild(b);
+  scroll();
+};
+const ask = (text, chips=[]) => {
+  say(text + (chips.length ? `<div class="chips">${chips.map(c=>`<span class="chip" data-intent="${c.intent||''}">${c.label}</span>`).join('')}</div>` : ''));
+  bindChips();
+};
+const bindChips = () => {
+  document.querySelectorAll('.chip').forEach(el=>{
+    el.onclick = ()=> handleIntent(el.dataset.intent || el.textContent);
+  });
+};
+const toCSV = (arr) => {
+  if(!arr.length) return '';
+  const cols = Object.keys(arr[0]);
+  const lines = [cols.join(',')];
+  for(const row of arr){
+    lines.push(cols.map(c => `"${String(row[c]??'').replaceAll('"','""')}"`).join(','));
+  }
+  return lines.join('\n');
+};
+const download = (filename, content) => {
+  const blob = new Blob([content], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+function postToWebhook(payload){
+  if(!AGENCY_CONFIG.webhookURL) return;
+  fetch(AGENCY_CONFIG.webhookURL, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  }).catch(()=>{});
+}
+
+// Simple intent detection
+function detectIntent(text){
+  const t = text.toLowerCase();
+  if(/auto|car|truck|vehicle/.test(t) && /quote|rate|price|insur/.test(t)) return 'autoQuote';
+  if(/home|house|property/.test(t) && /quote|rate|price|insur/.test(t)) return 'homeQuote';
+  if(/claim/.test(t)) return 'claims';
+  if(/renew|renewal|expire|expiration/.test(t)) return 'renewal';
+  if(/agent|appointment|call|meet/.test(t)) return 'contact';
+  return 'faq';
+}
+
+// Start
+intro();
+
+function intro(){
+  ask(
+    `<b>Hi! I’m your insurance assistant.</b><br/>I can help with quotes, claims, renewals, and questions. What do you need today?`,
+    [
+      {label:'Auto quote', intent:'autoQuote'},
+      {label:'Home quote', intent:'homeQuote'},
+      {label:'File a claim', intent:'claims'},
+      {label:'Policy renewal help', intent:'renewal'},
+      {label:'Talk to an agent', intent:'contact'},
+      {label:'Coverage questions', intent:'faq'}
+    ]
+  );
+}
+
+// Main router
+function handleIntent(intent, payload={}){
+  state.context = intent || 'faq';
+  if(intent === 'autoQuote') return autoQuoteStart();
+  if(intent === 'homeQuote') return homeQuoteStart();
+  if(intent === 'claims') return claimsStart();
+  if(intent === 'renewal') return renewalStart();
+  if(intent === 'contact') return contactStart();
+  if(intent === 'faq') return faqStart(payload.text);
+}
+
+// Flows
+function autoQuoteStart(){
+  say(`<b>Great — Auto Quote.</b> I’ll grab a few details and send them to an agent for an exact rate.`);
+  const form = `
+    <div class="divider"></div>
+    <div class="row">
+      <input id="aq_name" placeholder="Full name" />
+      <input id="aq_email" placeholder="Email" />
+    </div>
+    <div class="row">
+      <input id="aq_phone" placeholder="Phone" />
+      <input id="aq_zip" placeholder="ZIP code" />
+    </div>
+    <div class="row">
+      <input id="aq_vehicle" placeholder="Vehicle (e.g., 2021 Ford F-150)" />
+    </div>
+    <div class="row">
+      <select id="aq_history">
+        <option value="">Driving history</option>
+        <option>Clean</option>
+        <option>1 ticket</option>
+        <option>Accident in last 3 years</option>
+      </select>
+      <select id="aq_current">
+        <option value="">Currently insured?</option>
+        <option>Yes</option>
+        <option>No</option>
+      </select>
+    </div>
+    <div class="row">
+      <button class="btn" id="aq_submit">Request quote</button>
+      <button class="btn secondary" id="aq_cancel">Cancel</button>
+    </div>
+    <div class="small">You’ll get a quick callback/text with next steps.</div>
+  `;
+  say(form);
+  document.getElementById('aq_submit').onclick = () => {
+    const lead = {
+      type:'Auto',
+      name: val('aq_name'), email: val('aq_email'), phone: val('aq_phone'),
+      zip: val('aq_zip'), vehicle: val('aq_vehicle'),
+      history: val('aq_history'), current: val('aq_current'),
+      ts: new Date().toISOString()
+    };
+    if(!lead.name || !isEmail(lead.email) || !isPhone(lead.phone) || !/^\d{5}$/.test(lead.zip)){
+      say(`<span class="small">Please complete name, valid email, phone, and 5-digit ZIP.</span>`);
+      return;
+    }
+    captureLead(lead);
+    say(`<b>Thanks, ${lead.name}!</b> An agent will follow up shortly with your personalized rate. <span class="pill">Lead saved</span>`);
+    ask(`Anything else I can do?`, [
+      {label:'Home quote', intent:'homeQuote'},
+      {label:'Claim help', intent:'claims'},
+      {label:'Policy renewal', intent:'renewal'},
+      {label:'Coverage questions', intent:'faq'}
+    ]);
+  };
+  document.getElementById('aq_cancel').onclick = ()=> say(`<span class="small">Canceled.</span>`);
+}
+
+function homeQuoteStart(){
+  say(`<b>Home Quote</b> — a few details to get started.`);
+  const form = `
+    <div class="divider"></div>
+    <div class="row">
+      <input id="hq_name" placeholder="Full name" />
+      <input id="hq_email" placeholder="Email" />
+    </div>
+    <div class="row">
+      <input id="hq_phone" placeholder="Phone" />
+      <input id="hq_zip" placeholder="Property ZIP" />
+    </div>
+    <div class="row">
+      <input id="hq_address" placeholder="Street address" />
+    </div>
+    <div class="row">
+      <select id="hq_type">
+        <option value="">Property type</option>
+        <option>Primary home</option>
+        <option>Condo</option>
+        <option>Rental property</option>
+      </select>
+      <select id="hq_age">
+        <option value="">Approx. year built</option>
+        <option>Before 1980</option><option>1980–1999</option>
+        <option>2000–2010</option><option>2011–2020</option><option>2021+</option>
+      </select>
+    </div>
+    <div class="row">
+      <button class="btn" id="hq_submit">Request quote</button>
+      <button class="btn secondary" id="hq_cancel">Cancel</button>
+    </div>
+  `;
+  say(form);
+  document.getElementById('hq_submit').onclick = () => {
+    const lead = {
+      type:'Home',
+      name: val('hq_name'), email: val('hq_email'), phone: val('hq_phone'),
+      zip: val('hq_zip'), address: val('hq_address'), propType: val('hq_type'), yearBand: val('hq_age'),
+      ts: new Date().toISOString()
+    };
+    if(!lead.name || !isEmail(lead.email) || !isPhone(lead.phone) || !/^\d{5}$/.test(lead.zip)){
+      say(`<span class="small">Please complete name, valid email, phone, and 5-digit ZIP.</span>`);
+      return;
+    }
+    captureLead(lead);
+    say(`<b>Got it!</b> We’ll confirm details and share options for ${lead.address || 'your property'} soon. <span class="pill">Lead saved</span>`);
+    ask(`Need anything else?`, [
+      {label:'Auto quote', intent:'autoQuote'},
+      {label:'Claim help', intent:'claims'},
+      {label:'Coverage questions', intent:'faq'}
+    ]);
+  };
+  document.getElementById('hq_cancel').onclick = ()=> say(`<span class="small">Canceled.</span>`);
+}
+
+function claimsStart(){
+  say(`<b>Claims Help</b> — If you're safe, here’s how to file or check status:`);
+  say(`<ol class="small">
+      <li>Collect essentials: policy number, date/time, photos if available.</li>
+      <li>We can start a claim now. Want a callback or to continue here?</li>
+    </ol>
+    <div class="chips">
+      <span class="chip" data-intent="contact">Request a callback</span>
+      <span class="chip" data-intent="faq">What’s covered?</span>
+    </div>`);
+  bindChips();
+}
+
+function renewalStart(){
+  say(`<b>Renewal Reminders</b> — never miss an expiration. Drop your details:`);
+  const form = `
+    <div class="divider"></div>
+    <div class="row">
+      <input id="rn_name" placeholder="Full name" />
+      <input id="rn_email" placeholder="Email" />
+    </div>
+    <div class="row">
+      <input id="rn_phone" placeholder="Phone" />
+      <input id="rn_date" type="date" />
+    </div>
+    <div class="row">
+      <select id="rn_policy">
+        <option value="">Policy type</option>
+        <option>Auto</option><option>Home</option><option>Renters</option><option>Umbrella</option>
+      </select>
+      <button class="btn" id="rn_submit">Set reminder</button>
+    </div>
+  `;
+  say(form);
+  document.getElementById('rn_submit').onclick = () => {
+    const lead = {
+      type:'Renewal',
+      name: val('rn_name'), email: val('rn_email'), phone: val('rn_phone'),
+      renewalDate: val('rn_date'), policy: val('rn_policy'),
+      ts: new Date().toISOString()
+    };
+    if(!lead.name || !isEmail(lead.email) || !isPhone(lead.phone) || !lead.renewalDate){
+      say(`<span class="small">Please add name, valid email/phone, and renewal date.</span>`);
+      return;
+    }
+    captureLead(lead);
+    say(`<b>Done!</b> We’ll remind you ahead of ${lead.policy || 'your policy'} renewal. <span class="pill">Reminder saved</span>`);
+    ask(`Anything else today?`, [
+      {label:'Auto quote', intent:'autoQuote'},
+      {label:'Home quote', intent:'homeQuote'},
+      {label:'Coverage questions', intent:'faq'}
+    ]);
+  };
+}
+
+function contactStart(){
+  say(`<b>Request a Callback</b> — What’s the best number and time?`);
+  const form = `
+    <div class="divider"></div>
+    <div class="row">
+      <input id="cb_name" placeholder="Full name" />
+      <input id="cb_phone" placeholder="Phone" />
+    </div>
+    <div class="row">
+      <input id="cb_reason" placeholder="Reason (e.g., claim, new quote, billing)" />
+      <button class="btn" id="cb_submit">Request callback</button>
+    </div>
+  `;
+  say(form);
+  document.getElementById('cb_submit').onclick = () => {
+    const lead = {
+      type:'Callback',
+      name: val('cb_name'), phone: val('cb_phone'), reason: val('cb_reason'),
+      ts: new Date().toISOString()
+    };
+    if(!lead.name || !isPhone(lead.phone)){
+      say(`<span class="small">Please add your name and a valid phone number.</span>`);
+      return;
+    }
+    captureLead(lead);
+    say(`<b>Thanks!</b> An agent will call you shortly. <span class="pill">Request saved</span>`);
+    ask(`Meanwhile, want to check coverage FAQs?`, [{label:'Coverage questions', intent:'faq'}]);
+  };
+}
+
+function faqStart(userText=""){ 
+  const faqs = [
+    {q:"What does full coverage auto usually include?", a:"Typically liability + collision + comprehensive. Lender requirements vary. We’ll tailor limits/deductibles to you."},
+    {q:"How do deductibles work?", a:"You pay the deductible amount on a covered claim before insurance pays the rest—higher deductible often means lower premium."},
+    {q:"Is water damage covered by homeowners?", a:"Sudden/accidental discharge (like burst pipes) is generally covered; flooding from outside usually requires separate flood insurance."},
+    {q:"Can I bundle home and auto?", a:"Yes—bundling can reduce premiums and simplify billing. We’ll quote both options."},
+    {q:"How fast can I get a quote?", a:"Same day for most standard risks—often within hours when we have vehicle/property details."}
+  ];
+  if(userText){
+    say(`<b>Answer:</b> ${bestMatch(userText, faqs)}`);
+  } else {
+    say(`<b>Common Questions</b>`);
+    say(faqs.map(f=>`<div class="small"><b>${f.q}</b><br/>${f.a}</div>`).join('<div class="divider"></div>'));
+  }
+  ask(`Want to start a quote?`, [
+    {label:'Auto quote', intent:'autoQuote'},
+    {label:'Home quote', intent:'homeQuote'}
+  ]);
+}
+
+// Helpers
+function val(id){ return (document.getElementById(id)?.value||'').trim(); }
+function isEmail(s){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s||''); }
+function isPhone(s){ return /^\+?1?[\s.-]?(\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}$/.test(s||''); }
+function bestMatch(text, list){
+  const t=text.toLowerCase();
+  let best=list[0]; let score=0;
+  list.forEach(f=>{
+    const s = f.q.toLowerCase().split(' ').reduce((acc,w)=>acc + (t.includes(w)?1:0),0);
+    if(s>score){score=s;best=f;}
+  });
+  return best.a;
+}
+function captureLead(lead){
+  state.leads.push(lead);
+  // fire-and-forget to webhook if configured
+  postToWebhook({source:"InsuranceBotDemo", agency:AGENCY_CONFIG.name, lead});
+}
+
+// Input box
+sendBtn.onclick = () => {
+  const text = input.value.trim();
+  if(!text) return;
+  say(text,'user');
+  input.value='';
+  const intent = detectIntent(text);
+  handleIntent(intent, {text});
+};
+input.addEventListener('keydown', e=>{
+  if(e.key==='Enter') sendBtn.click();
+});
+
+// Export leads
+downloadBtn.onclick = () => {
+  if(!state.leads.length){ say(`<span class="small">No captured leads yet.</span>`); return; }
+  const csv = toCSV(state.leads);
+  download('leads.csv', csv);
+  say(`<span class="small">Leads exported.</span>`);
+};
+</script>
+</body>
+</html>

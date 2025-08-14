@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Insurance Assistant — 550 Solutions</title>
+
+  <!-- hCaptcha client script (site key can be public) -->
+  <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+
+  <style>
+    :root {
+      --bg: #0b1220; --panel:#121a2b; --muted:#7c8aa5; --accent:#23a6f0;
+      --good:#26c281; --bad:#ff5a5f; --text:#eaf0ff;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    .wrap{max-width:880px;margin:28px auto;padding:0 16px}
+    .card{background:var(--panel);border:1px solid #1e2943;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden}
+    .header{padding:18px 20px;display:flex;gap:12px;align-items:center;border-bottom:1px solid #1e2943;background:linear-gradient(180deg,#121a2b,#0f1726)}
+    .brand{font-weight:700;font-size:18px}
+    .sub{color:var(--muted);font-size:13px}
+    .content{padding:18px 18px 6px;height:56vh;overflow:auto}
+    .footer{padding:12px;border-top:1px solid #1e2943;display:flex;gap:8px}
+    .input{flex:1;padding:12px;border-radius:10px;border:1px solid #24304f;background:#0d1424;color:var(--text)}
+    button{border:0;background:var(--accent);color:#fff;padding:12px 14px;border-radius:10px;font-weight:600;cursor:pointer}
+    button.secondary{background:#263350;color:#cfe0ff}
+    .msg{margin:12px 0;display:flex;gap:10px}
+    .me{flex-direction:row-reverse}
+    .bubble{max-width:84%;padding:10px 12px;border-radius:12px;background:#18223a;border:1px solid #263350}
+    .me .bubble{background:#173054;border-color:#23456f}
+    .row{display:flex;gap:10px;margin:8px 0}
+    input,select,textarea{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #24304f;background:#0d1424;color:var(--text)}
+    label{font-size:12px;color:var(--muted);margin-top:8px;display:block}
+    .small{font-size:12px;color:var(--muted)}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#1a2641;border:1px solid #2a3b61;font-size:12px;color:#cfe0ff}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    @media (max-width:720px){.grid{grid-template-columns:1fr}.content{height:60vh}}
+    .btnbar{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
+    .ok{color:var(--good)} .err{color:var(--bad)}
+    .center{text-align:center}
+    .h-captcha{margin-top:8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="header">
+        <div class="brand">550 Solutions</div>
+        <div class="sub">Instant quotes • Answers • Reminders</div>
+      </div>
+      <div id="feed" class="content"></div>
+      <div class="footer">
+        <input id="input" class="input" placeholder="Ask about auto, home, callbacks, renewal reminders…"/>
+        <button id="send">Send</button>
+      </div>
+    </div>
+    <div class="small center" style="margin-top:10px;">Protected by hCaptcha</div>
+  </div>
+
+  <script>
+  // ====== CONFIG ======
+  const AGENCY_CONFIG = {
+    name: "550 Solutions",
+    subtitle: "Instant quotes • Answers • Reminders",
+    phone: "",
+    email: "info@550solutions.net",
+    webhookURL: "https://script.google.com/macros/s/AKfycbxu1dfny4rgp5vYHGYr-rxSxfxE5hKdEziccPPK4XggzwXezddMibOEc6kp7NRRVb-E/exec"
+  };
+  const HCAPTCHA_SITE_KEY = "df7eed86-3888-4120-8da8-fdb239fab22e"; // your public site key
+
+  // ====== HELPERS ======
+  const feed = document.getElementById('feed');
+  const say = (html, who='bot') => {
+    const row = document.createElement('div');
+    row.className = `msg ${who}`;
+    row.innerHTML = `<div class="bubble">${html}</div>`;
+    feed.appendChild(row);
+    feed.scrollTop = feed.scrollHeight;
+  };
+  const you = (text)=> say(text.replace(/</g,'&lt;'), 'me');
+  const isEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  const isPhone = v => /^[\d\-\+\(\)\s]{7,}$/.test(v);
+  const isZip   = v => /^\d{5}$/.test(v);
+
+  async function postLead(lead){
+    if(!AGENCY_CONFIG.webhookURL){
+      console.warn('Webhook missing — not sending', lead);
+      return { ok:true, local:true };
+    }
+    try{
+      const r = await fetch(AGENCY_CONFIG.webhookURL, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ lead })
+      });
+      return await r.json();
+    }catch(err){
+      return { error: 'Network error' };
+    }
+  }
+
+  function start(){
+    say(`<b>Hi! I’m your 550 Solutions assistant.</b><br/>
+         I can help with <b>Auto</b> and <b>Home</b> quotes, schedule a <b>callback</b>,
+         or set a <b>renewal reminder</b>. What do you need?`);
+    say(`
+      <div class="btnbar">
+        <button class="secondary" onclick="autoQuote()">Auto quote</button>
+        <button class="secondary" onclick="homeQuote()">Home quote</button>
+        <button class="secondary" onclick="callbackForm()">Request callback</button>
+        <button class="secondary" onclick="renewalForm()">Renewal reminder</button>
+      </div>
+    `);
+  }
+
+  // ====== RENDER HELPERS ======
+  function captchaBlock(){
+    return `<div class="h-captcha" data-sitekey="${HCAPTCHA_SITE_KEY}"></div>`;
+  }
+
+  // ====== FORMS WITH hCaptcha ======
+  function autoQuote(){
+    say(`
+      <div>
+        <div class="grid">
+          <div><label>Full name</label><input id="aq_name" placeholder="Jane Doe"/></div>
+          <div><label>Email</label><input id="aq_email" placeholder="you@email.com"/></div>
+          <div><label>Phone</label><input id="aq_phone" placeholder="(704) 555-0123"/></div>
+          <div><label>ZIP</label><input id="aq_zip" placeholder="28027"/></div>
+          <div>
+            <label>Driving history</label>
+            <select id="aq_hist">
+              <option value="">Select</option>
+              <option>Clean</option>
+              <option>1 ticket</option>
+              <option>2+ tickets</option>
+              <option>Accident in last 3 years</option>
+              <option>Multiple tickets/accidents</option>
+            </select>
+          </div>
+          <div><label>Vehicle (optional)</label><input id="aq_vehicle" placeholder="2021 Honda Civic"/></div>
+        </div>
+        ${captchaBlock()}
+        <div class="btnbar">
+          <button id="aq_submit">Request quote</button>
+          <button class="secondary" onclick="start()">Cancel</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('aq_submit').onclick = async () => {
+      const lead = {
+        type:'auto',
+        name:  document.getElementById('aq_name').value.trim(),
+        email: document.getElementById('aq_email').value.trim(),
+        phone: document.getElementById('aq_phone').value.trim(),
+        zip:   document.getElementById('aq_zip').value.trim(),
+        history: document.getElementById('aq_hist').value,
+        vehicle: document.getElementById('aq_vehicle').value.trim()
+      };
+      const token = (window.hcaptcha && hcaptcha.getResponse()) || '';
+      if(!lead.name || !isEmail(lead.email) || !isPhone(lead.phone) || !isZip(lead.zip)){
+        say(`<span class="small err">Please enter name, valid email/phone, and a 5-digit ZIP.</span>`); return;
+      }
+      if(!token){ say(`<span class="small err">Please complete the captcha.</span>`); return; }
+      lead.hcaptchaToken = token;
+
+      const res = await postLead(lead);
+      if(res && res.ok) say(`<b class="ok">Thanks, ${lead.name}!</b> We’ll follow up shortly. <span class="pill">Request sent</span>`);
+      else say(`<span class="small err">Something went wrong. Please try again.</span>`);
+      try{ hcaptcha.reset(); }catch(e){}
+    };
+  }
+
+  function homeQuote(){
+    say(`
+      <div>
+        <div class="grid">
+          <div><label>Full name</label><input id="hq_name" placeholder="Jane Doe"/></div>
+          <div><label>Email</label><input id="hq_email" placeholder="you@email.com"/></div>
+          <div><label>Phone</label><input id="hq_phone" placeholder="(704) 555-0123"/></div>
+          <div><label>ZIP</label><input id="hq_zip" placeholder="28027"/></div>
+          <div style="grid-column:1/-1"><label>Property address (optional)</label><input id="hq_addr" placeholder="123 Main St, Concord NC"/></div>
+        </div>
+        ${captchaBlock()}
+        <div class="btnbar">
+          <button id="hq_submit">Request quote</button>
+          <button class="secondary" onclick="start()">Cancel</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('hq_submit').onclick = async () => {
+      const lead = {
+        type:'home',
+        name:  document.getElementById('hq_name').value.trim(),
+        email: document.getElementById('hq_email').value.trim(),
+        phone: document.getElementById('hq_phone').value.trim(),
+        zip:   document.getElementById('hq_zip').value.trim(),
+        address: document.getElementById('hq_addr').value.trim()
+      };
+      const token = (window.hcaptcha && hcaptcha.getResponse()) || '';
+      if(!lead.name || !isEmail(lead.email) || !isPhone(lead.phone) || !isZip(lead.zip)){
+        say(`<span class="small err">Please enter name, valid email/phone, and a 5-digit ZIP.</span>`); return;
+      }
+      if(!token){ say(`<span class="small err">Please complete the captcha.</span>`); return; }
+      lead.hcaptchaToken = token;
+
+      const res = await postLead(lead);
+      if(res && res.ok) say(`<b class="ok">Got it!</b> We’ll confirm details and share options for ${lead.address || 'your property'}. <span class="pill">Request sent</span>`);
+      else say(`<span class="small err">Something went wrong. Please try again.</span>`);
+      try{ hcaptcha.reset(); }catch(e){}
+    };
+  }
+
+  function renewalForm(){
+    say(`
+      <div>
+        <div class="grid">
+          <div><label>Full name</label><input id="rn_name" placeholder="Jane Doe"/></div>
+          <div><label>Email</label><input id="rn_email" placeholder="you@email.com"/></div>
+          <div><label>Phone</label><input id="rn_phone" placeholder="(704) 555-0123"/></div>
+          <div><label>Renewal date</label><input id="rn_date" type="date"/></div>
+          <div><label>Policy type</label>
+            <select id="rn_policy">
+              <option>Auto</option><option>Home</option><option>Renters</option><option>Umbrella</option>
+            </select>
+          </div>
+        </div>
+        ${captchaBlock()}
+        <div class="btnbar">
+          <button id="rn_submit">Set reminder</button>
+          <button class="secondary" onclick="start()">Cancel</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('rn_submit').onclick = async () => {
+      const lead = {
+        type:'renewal',
+        name: document.getElementById('rn_name').value.trim(),
+        email:document.getElementById('rn_email').value.trim(),
+        phone:document.getElementById('rn_phone').value.trim(),
+        renewalDate: document.getElementById('rn_date').value,
+        policy: document.getElementById('rn_policy').value
+      };
+      const token = (window.hcaptcha && hcaptcha.getResponse()) || '';
+      if(!lead.name || !isEmail(lead.email) || !isPhone(lead.phone) || !lead.renewalDate){
+        say(`<span class="small err">Please add name, valid email/phone, and a renewal date.</span>`); return;
+      }
+      if(!token){ say(`<span class="small err">Please complete the captcha.</span>`); return; }
+      lead.hcaptchaToken = token;
+
+      const res = await postLead(lead);
+      if(res && res.ok) say(`<b class="ok">Done!</b> We’ll remind you ahead of your ${lead.policy} renewal. <span class="pill">Reminder saved</span>`);
+      else say(`<span class="small err">Something went wrong. Please try again.</span>`);
+      try{ hcaptcha.reset(); }catch(e){}
+    };
+  }
+
+  function callbackForm(){
+    say(`
+      <div>
+        <div class="grid">
+          <div><label>Full name</label><input id="cb_name" placeholder="Jane Doe"/></div>
+          <div><label>Phone</label><input id="cb_phone" placeholder="(704) 555-0123"/></div>
+          <div style="grid-column:1/-1"><label>Reason (e.g., claim, new quote, billing)</label><input id="cb_reason" placeholder="How can we help?"/></div>
+        </div>
+        ${captchaBlock()}
+        <div class="btnbar">
+          <button id="cb_submit">Request callback</button>
+          <button class="secondary" onclick="start()">Cancel</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('cb_submit').onclick = async () => {
+      const lead = {
+        type:'callback',
+        name: document.getElementById('cb_name').value.trim(),
+        phone:document.getElementById('cb_phone').value.trim(),
+        reason:document.getElementById('cb_reason').value.trim()
+      };
+      const token = (window.hcaptcha && hcaptcha.getResponse()) || '';
+      if(!lead.name || !isPhone(lead.phone)){
+        say(`<span class="small err">Please add your name and a valid phone number.</span>`); return;
+      }
+      if(!token){ say(`<span class="small err">Please complete the captcha.</span>`); return; }
+      lead.hcaptchaToken = token;
+
+      const res = await postLead(lead);
+      if(res && res.ok) say(`<b class="ok">Thanks!</b> An agent will call you shortly. <span class="pill">Request saved</span>`);
+      else say(`<span class="small err">Something went wrong. Please try again.</span>`);
+      try{ hcaptcha.reset(); }catch(e){}
+    };
+  }
+
+  // ====== BASIC CHAT ROUTER ======
+  document.getElementById('send').onclick = () => {
+    const i = document.getElementById('input');
+    const q = (i.value || '').trim(); if(!q) return;
+    you(q); i.value = '';
+    const t = q.toLowerCase();
+    if(t.includes('auto')) return autoQuote();
+    if(t.includes('home')||t.includes('house')) return homeQuote();
+    if(t.includes('renew')) return renewalForm();
+    if(t.includes('call')||t.includes('phone')) return callbackForm();
+    say(`I can help with <b>Auto</b>/<b>Home</b> quotes, a <b>Renewal reminder</b>, or a <b>Callback</b>.`);
+  };
+
+  // Kick off
+  start();
+  </script>
+</body>
+</html>
